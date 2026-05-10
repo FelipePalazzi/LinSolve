@@ -1,0 +1,12 @@
+#Variables de entorno
+.env
+
+#Modulos y dependencias
+frontend/node_modules
+frontend/dist
+frontend/.astro
+frontend/.svelte-kit
+
+#Entornos virtuales
+venv/*
+venv
