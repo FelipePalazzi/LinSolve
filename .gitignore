@@ -10,3 +10,6 @@ frontend/.svelte-kit
 #Entornos virtuales
 venv/*
 venv
+
+#Cache
+backend/__pycache__
