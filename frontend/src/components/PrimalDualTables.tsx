@@ -74,7 +74,9 @@ export function PrimalDualTables({ response, tabActiva }: Props) {
 
   const getVariableTooltip = (variable: ResultadoVariable) => ({
     titulo: `Variable ${variable.nombre}`,
-    contenido: `Valor óptimo: ${variable.valor}. ${variable.costo_reducido !== null && variable.costo_reducido !== 0 ? `Costo reducido: ${variable.costo_reducido}` : 'Costo reducido: 0 (variable en solución óptima)'}`
+    contenido: variable.en_base
+      ? `${variable.descripcion || variable.nombre} está en la base con valor ${variable.valor.toFixed(2)}. Costo reducido = 0 (solución óptima).`
+      : `${variable.descripcion || variable.nombre} NO está en la base (valor = 0). Costo reducido: ${variable.costo_reducido?.toFixed(2) || 'N/A'}. Para que entre a la base, su coeficiente debe mejorar en al menos ${variable.costo_reducido?.toFixed(2) || 'N/A'}.`
   });
 
   const renderTableau = (tableau: TableauIteracion, titulo: string) => {
@@ -235,23 +237,27 @@ export function PrimalDualTables({ response, tabActiva }: Props) {
             </thead>
             <tbody>
               {response.resultado_variables.map((var_) => {
-                const enBase = (var_.costo_reducido === 0 || var_.costo_reducido === null);
                 return (
                   <tr key={var_.nombre} className="hover:bg-gray-50">
-                    <td className="border p-2 font-mono">{var_.nombre}</td>
-                    <td className="border p-2 text-right font-mono">{var_.valor}</td>
+                    <td className="border p-2">
+                      <div className="font-mono">{var_.nombre}</div>
+                      {var_.descripcion && (
+                        <div className="text-xs text-gray-500">{var_.descripcion}</div>
+                      )}
+                    </td>
+                    <td className="border p-2 text-right font-mono">{var_.valor.toFixed(2)}</td>
                     <td className="border p-2 text-right">
                       <span
                         className="cursor-help underline decoration-dotted"
                         onMouseEnter={(e) => showTooltip(e, getVariableTooltip(var_))}
                         onMouseLeave={hideTooltip}
                       >
-                        {var_.costo_reducido?.toFixed(4) ?? '0.00'}
+                        {var_.costo_reducido}
                       </span>
                     </td>
                     <td className="border p-2 text-center">
-                      <span className={`px-2 py-1 rounded text-xs ${enBase ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                        {enBase ? 'SÍ' : 'NO'}
+                      <span className={`px-2 py-1 rounded text-xs ${var_.en_base ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                        {var_.en_base ? 'SÍ' : 'NO'}
                       </span>
                     </td>
                   </tr>

@@ -81,7 +81,8 @@ class PuLPSolver:
                 raise SolverError(f"Solver falló con estado: {LpStatus[status]}")
 
             nombres_variables = list(modelo.funcion_objetivo.keys())
-            resultado_variables = self._extraer_resultado_variables(problema, modelo)
+            descripciones = getattr(modelo, 'descripcion_variables', {})
+            resultado_variables = self._extraer_resultado_variables(problema, modelo, descripciones)
             resultado_restricciones = self._extraer_resultado_restricciones(problema, modelo)
             modelo_dual = DualGenerator.generar(nombres_variables, modelo)
             analisis = self._generar_analisis_sensibilidad(problema, modelo, resultado_restricciones)
@@ -167,18 +168,19 @@ class PuLPSolver:
         return mapeo.get(status, "ERROR")
 
     def _extraer_resultado_variables(
-        self, problema: LpProblem, modelo: ModeloPrimal
+        self, problema: LpProblem, modelo: ModeloPrimal, descripcion_variables: Dict[str, str] = None
     ) -> List[ResultadoVariable]:
         """Extrae los resultados de las variables primal"""
         resultados = []
         var_dict = problema.variablesDict()
+        descripciones = descripcion_variables or {}
 
         for var_nombre in modelo.funcion_objetivo.keys():
             var = var_dict.get(var_nombre)
-            if not var:
+            if var is None:
                 continue
 
-            valor = value(var) if value(var) else 0.0
+            valor = value(var) if value(var) is not None else 0.0
             dj = getattr(var, 'dj', 0) or 0
 
             en_base = abs(valor) > 1e-9 and abs(dj) < 1e-6
@@ -186,6 +188,7 @@ class PuLPSolver:
             resultados.append(
                 ResultadoVariable(
                     nombre=var_nombre,
+                    descripcion=descripciones.get(var_nombre),
                     valor=round(valor, self.precision),
                     costo_reducido=round(abs(dj), self.precision) if not en_base else None,
                     en_base=en_base
@@ -435,6 +438,8 @@ class PuLPSolver:
     def _generar_planteo_validacion(self, modelo: ModeloPrimal) -> PlanteoValidacion:
         """Genera el planteo en texto para validación del usuario"""
         funcion_objetivo, restricciones, variables, descripciones = ModeloValidator.generar_planteo_texto(modelo)
+        desc_modelo = getattr(modelo, 'descripcion_variables', {})
+        descripciones.update(desc_modelo)
         return PlanteoValidacion(
             funcion_objetivo_texto=funcion_objetivo,
             restricciones_texto=restricciones,

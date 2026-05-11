@@ -66,6 +66,7 @@ class ModeloPrimal(BaseModel):
     funcion_objetivo: Dict[str, float]
     restricciones: List[Restriccion]
     nombre_variable_objetivo: str = "Z"
+    descripcion_variables: Dict[str, str] = {}
 
     @field_validator('restricciones')
     @classmethod
