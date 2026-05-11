@@ -35,11 +35,14 @@ export interface PlanteoValidacion {
   funcion_objetivo_texto: string;
   restricciones_texto: string[];
   variables_texto: string[];
+  descripcion_variables: Record<string, string>;
 }
 
 export interface ResultadoVariable {
   nombre: string;
+  descripcion?: string;
   valor: number;
+  en_base: boolean;
   holgura?: number;
   precio_sombra?: number;
   costo_reducido?: number;
@@ -101,11 +104,15 @@ export interface SolveResponse {
 }
 
 export interface WhatIfModificacion {
-  tipo: 'coef_objetivo' | 'rhs' | 'coef_tecnologico' | 'nueva_restriccion';
+  tipo: 'coef_objetivo' | 'rhs' | 'coef_tecnologico' | 'nueva_restriccion' | 'nueva_actividad' | 'demanda_min';
   variable: string;
   restriccion?: string;
   valor_nuevo: number;
   restriccion_nueva?: Restriccion;
+  datos_actividad?: {
+    precio: number;
+    coeficientes: Record<string, number>;
+  };
 }
 
 export interface WhatIfRequest {

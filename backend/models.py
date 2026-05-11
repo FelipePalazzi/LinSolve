@@ -4,7 +4,7 @@ Define los schemas de validación de entrada/salida siguiendo rigor matemático 
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Any
 import re
 
 
@@ -76,19 +76,19 @@ class ModeloPrimal(BaseModel):
 
 
 class PlanteoValidacion(BaseModel):
-    """
-    Devuelve el planteo interpretado para que el usuario valide antes de resolver.
-    Fase crítica para evitar que la IA interprete mal el problema.
-    """
+    """Planteo validado para confirmación del usuario"""
     funcion_objetivo_texto: str
     restricciones_texto: List[str]
     variables_texto: List[str]
+    descripcion_variables: Dict[str, str] = {}  # {"x1": "cantidad de escritorios producidos"}
 
 
 class ResultadoVariable(BaseModel):
     """Resultado de una variable en la solución óptima"""
     nombre: str
+    descripcion: Optional[str] = None  # Descripción de la variable
     valor: float
+    en_base: bool = True  # Si está en la base
     holgura: Optional[float] = None
     precio_sombra: Optional[float] = None
     costo_reducido: Optional[float] = None
@@ -188,11 +188,12 @@ class TableauRespuesta(BaseModel):
 
 class WhatIfModificacion(BaseModel):
     """Modificación a aplicar para análisis What-If"""
-    tipo: Literal["coef_objetivo", "rhs", "coef_tecnologico", "nueva_restriccion"]
+    tipo: Literal["coef_objetivo", "rhs", "coef_tecnologico", "nueva_restriccion", "nueva_actividad", "demanda_min"]
     variable: str
     restriccion: Optional[str] = None
     valor_nuevo: float
     restriccion_nueva: Optional["Restriccion"] = None
+    datos_actividad: Optional[Dict[str, Any]] = None
 
 
 class WhatIfRequest(BaseModel):

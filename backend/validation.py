@@ -5,7 +5,7 @@ según las reglas de Programación Lineal (Hillier & Lieberman).
 """
 
 from backend.models import ModeloPrimal, Restriccion
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 
 class ValidationError(Exception):
@@ -92,7 +92,7 @@ class ModeloValidator:
         return errores
 
     @staticmethod
-    def generar_planteo_texto(modelo: ModeloPrimal) -> Tuple[str, List[str], List[str]]:
+    def generar_planteo_texto(modelo: ModeloPrimal) -> Tuple[str, List[str], List[str], Dict[str, str]]:
         """
         Genera representaciones textuales del planteo para validación del usuario.
 
@@ -100,7 +100,7 @@ class ModeloValidator:
             modelo: ModeloPrimal validado
 
         Returns:
-            Tupla (funcion_objetivo_texto, restricciones_texto, variables_texto)
+            Tupla (funcion_objetivo_texto, restricciones_texto, variables_texto, descripcion_variables)
         """
         tipo = modelo.tipo_optimizacion.upper()
         coef_str = " + ".join(
@@ -121,4 +121,8 @@ class ModeloValidator:
         variables = list(modelo.funcion_objetivo.keys())
         variables_texto = [f"{v} ≥ 0" for v in variables]
 
-        return funcion_objetivo_texto, restricciones_texto, variables_texto
+        descripcion_variables = getattr(modelo, 'descripcion_variables', {})
+        if not descripcion_variables:
+            descripcion_variables = {v: f"Cantidad de {v}" for v in variables}
+
+        return funcion_objetivo_texto, restricciones_texto, variables_texto, descripcion_variables

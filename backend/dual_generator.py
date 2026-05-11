@@ -35,7 +35,7 @@ class DualGenerator:
         """
         tipo_dual = "min" if modelo_primal.tipo_optimizacion == "max" else "max"
         restricciones_duales = DualGenerator._construir_restricciones_duales(
-            modelo_primal.restricciones, nombres_variables
+            modelo_primal.restricciones, nombres_variables, modelo_primal.funcion_objetivo
         )
         funcion_objetivo_dual = DualGenerator._construir_funcion_objetivo_dual(
             modelo_primal.restricciones
@@ -77,32 +77,21 @@ class DualGenerator:
         return f"{tipo_str} W = {' + '.join(terminos)}"
 
     @staticmethod
-    def _construir_restricciones_duales(restricciones: List, nombres_variables: List[str]) -> List[RestriccionDual]:
+    def _construir_restricciones_duales(restricciones: List, nombres_variables: List[str], funcion_objetivo: Dict[str, float]) -> List[RestriccionDual]:
         """
         Construye las restricciones duales mediante transposición de la matriz A.
 
         Para cada variable primal x_j, se crea una restricción dual Y_j:
         La fila j del dual contiene los coeficientes A_ij de la columna j del primal.
-
-        Ejemplo:
-        Primal:
-        R1: 2x1 + 1x2 ≤ 100  ->  Coef de x1 = 2, coef de x2 = 1
-        R2: 1x1 + 3x2 ≤ 150  ->  Coef de x1 = 1, coef de x2 = 3
-
-        Matriz A:
-        | 2  1 |
-        | 1  3 |
-
-        A^T (Dual constraints como filas):
-        Y1: 2y1 + 1y2 ≥ c1  (c1 = coeficiente de x1 en función objetivo primal)
-        Y2: 1y1 + 3y2 ≥ c2  (c2 = coeficiente de x2 en función objetivo primal)
+        El RHS de cada restricción dual es el coeficiente de xj en la función objetivo primal.
 
         Args:
             restricciones: Lista de restricciones con .coeficientes.variables
             nombres_variables: Lista de nombres de variables [x1, x2, ..., xn]
+            funcion_objetivo: Diccionario de coeficientes de la FO primal
 
         Returns:
-            Lista de RestriccionDual con coeficientes transpuestos
+            Lista de RestriccionDual con coeficientes transpuestos y RHS correcto
         """
         restricciones_duales = []
 
@@ -113,12 +102,14 @@ class DualGenerator:
                 coef = restriccion.coeficientes.variables.get(nombre_var, 0.0)
                 coefs_transpuestos[f"y{i}"] = coef
 
+            rhs_dual = funcion_objetivo.get(nombre_var, 0.0)
+
             restricciones_duales.append(
                 RestriccionDual(
                     nombre=f"Y{idx + 1}",
                     coeficientes=coefs_transpuestos,
                     tipo=">=",
-                    rhs=0.0
+                    rhs=rhs_dual
                 )
             )
 

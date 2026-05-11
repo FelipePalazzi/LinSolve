@@ -171,13 +171,24 @@ class PuLPSolver:
     ) -> List[ResultadoVariable]:
         """Extrae los resultados de las variables primal"""
         resultados = []
-        for var in modelo.funcion_objetivo.keys():
-            valor = value(problema.variablesDict()[var])
+        var_dict = problema.variablesDict()
+
+        for var_nombre in modelo.funcion_objetivo.keys():
+            var = var_dict.get(var_nombre)
+            if not var:
+                continue
+
+            valor = value(var) if value(var) else 0.0
+            dj = getattr(var, 'dj', 0) or 0
+
+            en_base = abs(valor) > 1e-9 and abs(dj) < 1e-6
+
             resultados.append(
                 ResultadoVariable(
-                    nombre=var,
-                    valor=round(valor, self.precision) if valor else 0.0,
-                    costo_reducido=round(problema.variablesDict()[var].dj, self.precision) if valor else None
+                    nombre=var_nombre,
+                    valor=round(valor, self.precision),
+                    costo_reducido=round(abs(dj), self.precision) if not en_base else None,
+                    en_base=en_base
                 )
             )
         return resultados
@@ -423,11 +434,12 @@ class PuLPSolver:
 
     def _generar_planteo_validacion(self, modelo: ModeloPrimal) -> PlanteoValidacion:
         """Genera el planteo en texto para validación del usuario"""
-        funcion_objetivo, restricciones, variables = ModeloValidator.generar_planteo_texto(modelo)
+        funcion_objetivo, restricciones, variables, descripciones = ModeloValidator.generar_planteo_texto(modelo)
         return PlanteoValidacion(
             funcion_objetivo_texto=funcion_objetivo,
             restricciones_texto=restricciones,
-            variables_texto=variables
+            variables_texto=variables,
+            descripcion_variables=descripciones
         )
 
     def _generar_tableaux(self, modelo: ModeloPrimal, problema: LpProblem) -> TableauRespuesta:
@@ -464,7 +476,7 @@ class PuLPSolver:
         Resuelve el dual como un problema separado usando PuLP,
         luego reconstruye el tableau óptimo.
         """
-        from pulp import LpVariable, LpProblem as LpProblemDual, LpMinimize, LpStatus, value
+        from pulp import LpVariable, LpProblem as LpProblemDual, LpMinimize, LpStatus, value, LpAffineExpression
         from backend.dual_generator import DualGenerator
 
         nombres_vars_primal = list(modelo.funcion_objetivo.keys())
@@ -481,11 +493,8 @@ class PuLPSolver:
 
         dual_problem = LpProblemDual("Dual_LP", LpMinimize)
 
-        y_vars = {f"y{i+1}":LpVariable(f"y{i+1}", lowBound=0) for i in range(num_restricciones)}
-        s_vars = {f"s{i+1}":LpVariable(f"s{i+1}", lowBound=0) for i in range(num_vars_primal)}
-
-        for i, restr in enumerate(modelo.restricciones):
-            pass
+        y_vars = {f"y{i+1}": LpVariable(f"y{i+1}", lowBound=0) for i in range(num_restricciones)}
+        s_vars = {f"s{i+1}": LpVariable(f"s{i+1}", lowBound=0) for i in range(num_vars_primal)}
 
         funcion_objetivo_dual = sum(ck_dual[i] * y_vars[f"y{i+1}"] for i in range(num_restricciones))
         dual_problem += funcion_objetivo_dual
@@ -496,13 +505,10 @@ class PuLPSolver:
                 coef = restr.coeficientes.variables.get(var_primal, 0.0)
                 coefs.append(coef * y_vars[f"y{i+1}"])
 
-            expr = sum(coefs) - sum(s_vars[f"s{k+1}"] for k in range(num_vars_primal) if k == j) >= modelo.funcion_objetivo[var_primal]
+            expr = sum(coefs) - s_vars[f"s{j+1}"] >= modelo.funcion_objetivo[var_primal]
             dual_problem += expr, f"Y{j+1}"
 
         dual_problem.solve()
-
-        if dual_problem.status != LpStatusOptimal:
-            return self._generar_tableau_dual_inicial(modelo, nombres_vars_dual, nombres_surplus, ck_dual, ck_surplus)
 
         A = self._construir_matriz_A(modelo, nombres_vars_primal)
         A_T = A.T
@@ -512,20 +518,20 @@ class PuLPSolver:
             fila = []
             for i in range(num_restricciones):
                 coef = A_T[j, i]
-                fila.append(coef)
+                fila.append(-coef)
             for k in range(num_vars_primal):
-                fila.append(-1.0 if k == j else 0.0)
+                fila.append(1.0 if k == j else 0.0)
             matriz_inicial.append(fila)
 
-        rhs = [modelo.funcion_objetivo.get(v, 0.0) for v in nombres_vars_primal]
+        rhs_original = [-modelo.funcion_objetivo.get(v, 0.0) for v in nombres_vars_primal]
 
         todos_nombres = nombres_vars_dual + nombres_surplus
-        var_dict = {v.name: v for v in dual_problem.variables()}
+        var_dict_dual = {v.name: v for v in dual_problem.variables()}
 
         basicas = []
         for nombre in todos_nombres:
-            if nombre in var_dict:
-                var = var_dict[nombre]
+            if nombre in var_dict_dual:
+                var = var_dict_dual[nombre]
                 val = value(var) or 0
                 if abs(val) > 1e-9:
                     basicas.append(nombre)
@@ -548,9 +554,9 @@ class PuLPSolver:
         try:
             B_inv = np.linalg.inv(B)
         except np.linalg.LinAlgError:
-            return self._generar_fallback_dual(matriz_inicial, rhs, ck_dual, ck_surplus, basicas, nombres_vars_dual, nombres_surplus, modelo_dual.tipo_optimizacion)
+            return self._generar_fallback_dual(matriz_inicial, rhs_original, ck_dual, ck_surplus, basicas, nombres_vars_dual, nombres_surplus, modelo_dual.tipo_optimizacion)
 
-        bk = B_inv @ np.array(rhs)
+        bk = B_inv @ np.array(rhs_original)
         tableau_optimo = B_inv @ matriz_np
 
         ck_fila = [ck_dual[nombres_vars_dual.index(v)] if v in nombres_vars_dual else 0.0 for v in basicas]

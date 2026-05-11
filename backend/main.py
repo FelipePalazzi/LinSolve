@@ -25,7 +25,8 @@ from backend.models import (
     SolveRequest, SolveResponse, ErrorResponse,
     ModeloPrimal, PlanteoValidacion, ResultadoVariable,
     RestriccionResultado, ModeloDualExplícito, AnalisisSensibilidad,
-    WhatIfRequest, WhatIfResponse, WhatIfModificacion
+    WhatIfRequest, WhatIfResponse, WhatIfModificacion,
+    Restriccion, CoeficientesRestriccion
 )
 from backend.solver import PuLPSolver, SolverError
 from backend.validation import ModeloValidator, ValidationError
@@ -220,8 +221,11 @@ Responde SOLO con JSON válido siguiendo este esquema:
   "restricciones": [
     {{"nombre": "R1", "coeficientes": {{"variables": {{"x1": 2.0, "x2": 1.0}}}}, "tipo": "<=" | ">=" | "=", "rhs": 100}}
   ],
-  "nombre_variable_objetivo": "Z"
+  "nombre_variable_objetivo": "Z",
+  "descripcion_variables": {{"x1": "cantidad de escritorios producidos", "x2": "cantidad de mesas producidas"}}
 }}
+
+El campo "descripcion_variables" debe contener una descripción clara de qué representa cada variable en contexto de negocio.
 
 No incluyas texto adicional, solo el JSON."""
 
@@ -416,6 +420,31 @@ async def what_if_analysis(request: Request, what_if_request: WhatIfRequest) -> 
             elif mod.tipo == "nueva_restriccion":
                 if mod.restriccion_nueva:
                     modelo_modificado.restricciones.append(mod.restriccion_nueva)
+            elif mod.tipo == "nueva_actividad":
+                if mod.datos_actividad:
+                    nueva_var = mod.variable
+                    precio = mod.datos_actividad.get('precio', 0)
+                    coef_tecnologicos = mod.datos_actividad.get('coeficientes', {})
+
+                    modelo_modificado.funcion_objetivo[nueva_var] = precio
+
+                    num_restricciones = len(modelo_modificado.restricciones)
+                    nueva_restriccion = Restriccion(
+                        nombre=f"R{num_restricciones + 1}",
+                        coeficientes=CoeficientesRestriccion(variables=coef_tecnologicos),
+                        tipo="<=",
+                        rhs=mod.valor_nuevo
+                    )
+                    modelo_modificado.restricciones.append(nueva_restriccion)
+            elif mod.tipo == "demanda_min":
+                num_restricciones = len(modelo_modificado.restricciones)
+                nueva_restriccion = Restriccion(
+                    nombre=f"R{num_restricciones + 1}",
+                    coeficientes=CoeficientesRestriccion(variables={mod.variable: 1.0}),
+                    tipo=">=",
+                    rhs=mod.valor_nuevo
+                )
+                modelo_modificado.restricciones.append(nueva_restriccion)
 
         solver = PuLPSolver()
         resultado_original = solver.resolver(
