@@ -285,10 +285,14 @@ pytest tests/test_api.py -v
 # LinSolve - Configuración Local
 # ─────────────────────────────────────────────
 
-# Nvidia NIM API Key (requerida para LLM)
+# NVIDIA NIM Configuración (Capa LLM)
 NVIDIA_API_KEY=nvapi-tu-key-aqui
-NVIDIA_API_URL=https://integrate.api.nvidia.com/v1/chat/completions
-NVIDIA_MODEL=deepseek-ai/deepseek-v4-pro
+# 1. Extracción de Modelo (Text-to-Math)
+NVIDIA_EXTRACT_URL=https://integrate.api.nvidia.com/v1/chat/completions
+NVIDIA_EXTRACT_MODEL=deepseek-ai/deepseek-v4-pro
+# 2. Análisis de Negocio (Math-to-Business)
+NVIDIA_ANALYSIS_URL=https://integrate.api.nvidia.com/v1/chat/completions
+NVIDIA_ANALYSIS_MODEL=deepseek-ai/deepseek-v4-pro
 
 # Orígenes CORS permitidos (separados por coma)
 ALLOWED_ORIGINS=http://localhost:4321,http://localhost:3000

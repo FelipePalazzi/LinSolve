@@ -224,7 +224,9 @@ class PuLPSolver:
     ) -> AnalisisSensibilidad:
         """Genera el análisis de sensibilidad según Hillier & Lieberman
 
-        Calcula rangos de optimalidad a partir del tableau óptimo.
+        Calcula rangos de optimalidad correctamente usando el método del simplex:
+        - Para coeficientes de FO: allowable increase/decrease basados en Zj-Cj
+        - Para RHS: rangos de factibilidad basados en precios sombra
         """
         var_dict = problema.variablesDict()
         nombres_vars = list(modelo.funcion_objetivo.keys())
@@ -265,59 +267,117 @@ class PuLPSolver:
         except:
             tableau_optimo = None
 
+        if tableau_optimo is None:
+            return AnalisisSensibilidad(
+                rango_optimos=[RangoOptimo(variable=v, min=0.0, max=float('inf')) for v in nombres_vars],
+                costo_reducido_interpretacion="No se pudo calcular el tableau óptimo.",
+                holguras_interpretacion="",
+                relacion_Z_equals_W=""
+            )
+
+        b = np.array([r.rhs for r in modelo.restricciones])
+        bk = B_inv @ b
+
         ck_originales = [modelo.funcion_objetivo.get(v, 0.0) for v in nombres_vars]
         ck_slack = [0.0] * num_restricciones
         todos_ck = ck_originales + ck_slack
 
-        rangos = []
+        ck_fila = [todos_ck[todos_nombres.index(v)] for v in basicas]
+
+        zj_cj = []
+        num_columnas = tableau_optimo.shape[1]
+        for j in range(num_columnas):
+            zj = sum(ck_fila[i] * tableau_optimo[i, j] for i in range(num_restricciones))
+            cj = todos_ck[j] if j < len(todos_ck) else 0.0
+            zj_cj.append(round(zj - cj, 6))
+
+        rangos_coef = []
         for i, var_nombre in enumerate(nombres_vars):
             lp_var = var_dict.get(var_nombre)
             if not lp_var:
                 continue
 
+            var_value = getattr(lp_var, 'varValue', 0) or 0
+            dj = getattr(lp_var, 'dj', 0) or 0
             coef_actual = modelo.funcion_objetivo.get(var_nombre, 0)
 
-            if tableau_optimo is not None:
-                shadow_prices = []
-                for restr in modelo.restricciones:
-                    constraint = problema.constraints.get(restr.nombre)
-                    if constraint:
-                        pi = getattr(constraint, 'pi', 0) or 0
-                        shadow_prices.append(pi)
+            if abs(var_value) > 1e-9:
+                col_idx = i
+                col_tableau = tableau_optimo[:, col_idx]
 
-                min_lim = 0.0
-                max_lim = float('inf')
+                min_val = 0.0
+                max_val = float('inf')
 
-                for j in range(len(nombres_vars), len(todos_nombres)):
-                    col_idx = j - len(nombres_vars)
-                    coef_tecnologico = A[col_idx, i] if col_idx < A.shape[0] else 0
+                for k in range(num_restricciones):
+                    a_ij = col_tableau[k]
+                    b_j = bk[k]
 
-                    if abs(coef_tecnologico) > 1e-9 and col_idx < len(shadow_prices):
-                        shadow = abs(shadow_prices[col_idx])
-                        if shadow > 0:
-                            if coef_tecnologico > 0:
-                                max_posible = coef_actual + 100
-                                if max_posible < max_lim:
-                                    max_lim = max_posible
-                            else:
-                                min_posible = coef_actual - 100
-                                if min_posible > min_lim:
-                                    min_lim = min_posible
+                    if abs(a_ij) > 1e-9:
+                        if a_ij > 0:
+                            ratio = b_j / a_ij
+                            if ratio < max_val:
+                                max_val = ratio
+                        else:
+                            ratio = -b_j / a_ij
+                            if ratio > min_val:
+                                min_val = ratio
 
-                if min_lim < 0:
-                    min_lim = 0
+                if min_val < 0:
+                    min_val = 0
 
-                rangos.append(RangoOptimo(
+                rango = RangoOptimo(
                     variable=var_nombre,
-                    min=round(min_lim, 2),
-                    max=round(max_lim, 2)
-                ))
+                    min=round(coef_actual - min_val, 2),
+                    max=round(coef_actual + max_val, 2)
+                )
+                rangos_coef.append(rango)
             else:
-                rangos.append(RangoOptimo(
+                rango = RangoOptimo(
                     variable=var_nombre,
-                    min=0.0,
-                    max=float('inf')
-                ))
+                    min=max(0, coef_actual - abs(dj)),
+                    max=coef_actual + abs(dj) if dj > 0 else float('inf')
+                )
+                rangos_coef.append(rango)
+
+        rangos_rhs = []
+        shadow_prices = []
+        for restr in modelo.restricciones:
+            constraint = problema.constraints.get(restr.nombre)
+            if constraint:
+                pi = getattr(constraint, 'pi', 0) or 0
+                shadow_prices.append(pi)
+
+        for i, restr in enumerate(modelo.restricciones):
+            b_actual = restr.rhs
+
+            min_val = 0.0
+            max_val = float('inf')
+
+            col_idx = len(nombres_vars) + i
+            col_tableau = tableau_optimo[:, col_idx]
+
+            for k in range(num_restricciones):
+                a_ik = col_tableau[k]
+                b_k = bk[k]
+
+                if abs(a_ik) > 1e-9:
+                    if a_ik > 0:
+                        ratio = b_k / a_ik
+                        nuevo_rhs = b_actual + ratio
+                        if nuevo_rhs < max_val:
+                            max_val = nuevo_rhs
+                    else:
+                        ratio = -b_k / a_ik
+                        nuevo_rhs = b_actual - ratio
+                        if nuevo_rhs > min_val:
+                            min_val = nuevo_rhs
+
+            rango_rhs = RangoOptimo(
+                variable=restr.nombre,
+                min=round(max(0, min_val), 2),
+                max=round(max_val, 2)
+            )
+            rangos_rhs.append(rango_rhs)
 
         restricciones_activas = sum(1 for r in resultado_restricciones if r.activa)
         total_restricciones = len(resultado_restricciones)
@@ -325,7 +385,8 @@ class PuLPSolver:
         costo_reducido_info = self._generar_info_costos_reducidos(modelo, var_dict, resultado_restricciones)
 
         return AnalisisSensibilidad(
-            rango_optimos=rangos,
+            rango_optimos=rangos_coef,
+            rango_rhs=rangos_rhs,
             costo_reducido_interpretacion=costo_reducido_info,
             holguras_interpretacion=(
                 f"De {total_restricciones} restricciones, {restricciones_activas} están activas "
@@ -473,131 +534,154 @@ class PuLPSolver:
             return None
 
     def _generar_tableau_dual_optimo(self, modelo: ModeloPrimal, problema: LpProblem) -> Dict:
-        """Genera el tableau óptimo del modelo dual
+        """Genera el tableau óptimo del modelo dual.
 
-        Para primal Max: dual Min W = b^T y
-        con restricciones A^T y >= c (todas >= porque primal es <=)
-
-        Resuelve el dual como un problema separado usando PuLP,
-        luego reconstruye el tableau óptimo.
+        El dual del primal (MAX con <=) tiene restricciones >=.
+        Usamos los precios sombra del primal para construir el tableau dual óptimo.
         """
-        from pulp import LpVariable, LpProblem as LpProblemDual, LpMinimize, LpStatus, value, LpAffineExpression
+        from pulp import LpStatus, value
         from backend.dual_generator import DualGenerator
 
-        nombres_vars_primal = list(modelo.funcion_objetivo.keys())
-        num_vars_primal = len(nombres_vars_primal)
+        num_vars_primal = len(modelo.funcion_objetivo)
         num_restricciones = len(modelo.restricciones)
+        nombres_vars_primal = list(modelo.funcion_objetivo.keys())
 
         modelo_dual = DualGenerator.generar(nombres_vars_primal, modelo)
 
-        nombres_vars_dual = [f"y{i+1}" for i in range(num_restricciones)]
-        nombres_surplus = [f"s{i+1}" for i in range(num_vars_primal)]
+        var_dict = problema.variablesDict()
+        shadow_prices = []
+        for restr in modelo.restricciones:
+            constraint = problema.constraints.get(restr.nombre)
+            if constraint:
+                pi = getattr(constraint, 'pi', 0) or 0
+                shadow_prices.append(pi)
 
-        ck_dual = [restr.rhs for restr in modelo.restricciones]
-        ck_surplus = [0.0] * num_vars_primal
-
-        dual_problem = LpProblemDual("Dual_LP", LpMinimize)
-
-        y_vars = {f"y{i+1}": LpVariable(f"y{i+1}", lowBound=0) for i in range(num_restricciones)}
-        s_vars = {f"s{i+1}": LpVariable(f"s{i+1}", lowBound=0) for i in range(num_vars_primal)}
-
-        funcion_objetivo_dual = sum(ck_dual[i] * y_vars[f"y{i+1}"] for i in range(num_restricciones))
-        dual_problem += funcion_objetivo_dual
-
-        for j, var_primal in enumerate(nombres_vars_primal):
-            coefs = []
-            for i, restr in enumerate(modelo.restricciones):
-                coef = restr.coeficientes.variables.get(var_primal, 0.0)
-                coefs.append(coef * y_vars[f"y{i+1}"])
-
-            expr = sum(coefs) - s_vars[f"s{j+1}"] >= modelo.funcion_objetivo[var_primal]
-            dual_problem += expr, f"Y{j+1}"
-
-        dual_problem.solve()
+        y_valores = {f"y{i+1}": shadow_prices[i] for i in range(num_restricciones)}
 
         A = self._construir_matriz_A(modelo, nombres_vars_primal)
         A_T = A.T
 
-        matriz_inicial = []
-        for j in range(num_vars_primal):
-            fila = []
-            for i in range(num_restricciones):
-                coef = A_T[j, i]
-                fila.append(-coef)
-            for k in range(num_vars_primal):
-                fila.append(1.0 if k == j else 0.0)
-            matriz_inicial.append(fila)
+        nombres_vars_dual = [f"y{i+1}" for i in range(num_restricciones)]
+        nombres_slack_dual = [f"s{i+1}" for i in range(num_vars_primal)]
 
-        rhs_original = [-modelo.funcion_objetivo.get(v, 0.0) for v in nombres_vars_primal]
+        columnas = nombres_vars_dual + nombres_slack_dual
+        num_col = len(columnas)
+        num_fil = num_vars_primal
 
-        todos_nombres = nombres_vars_dual + nombres_surplus
-        var_dict_dual = {v.name: v for v in dual_problem.variables()}
+        matriz = np.zeros((num_fil, num_col))
+        for i in range(num_vars_primal):
+            for j in range(num_restricciones):
+                matriz[i, j] = A_T[i, j]
+            for j in range(num_vars_primal):
+                matriz[i, num_restricciones + j] = -1.0 if i == j else 0.0
 
-        basicas = []
-        for nombre in todos_nombres:
-            if nombre in var_dict_dual:
-                var = var_dict_dual[nombre]
+        rhs = [modelo.funcion_objetivo.get(v, 0.0) for v in nombres_vars_primal]
+
+        primal_var_dict = {v.name: v for v in problema.variables()}
+        primal_basicas = []
+        for nombre in nombres_vars_primal + [f"S{i+1}" for i in range(num_restricciones)]:
+            if nombre in primal_var_dict:
+                var = primal_var_dict[nombre]
                 val = value(var) or 0
-                if abs(val) > 1e-9:
-                    basicas.append(nombre)
+                dj = getattr(var, 'dj', 0) or 0
+                if abs(val) > 1e-9 and abs(dj) < 1e-6:
+                    primal_basicas.append(nombre)
 
-        while len(basicas) < num_vars_primal:
-            for nombre in nombres_surplus:
-                if nombre not in basicas:
-                    basicas.append(nombre)
+        dual_basicas = []
+        for i, primal_var in enumerate(primal_basicas):
+            if primal_var.startswith("S"):
+                idx = int(primal_var[1:]) - 1
+                if idx < num_restricciones:
+                    dual_basicas.append(f"s{idx + 1}")
+            else:
+                dual_basicas.append(f"R{primal_vars.index(primal_var) + 1}_dual")
+        primal_vars = nombres_vars_primal
+        for i, primal_var in enumerate(primal_vars):
+            dual_var_name = f"R{i+1}_dual"
+            if primal_var in primal_basicas:
+                dual_basicas.append(dual_var_name)
+
+        dual_basicas = [b for b in dual_basicas if b in columnas]
+        while len(dual_basicas) < num_fil:
+            for col in columnas:
+                if col not in dual_basicas:
+                    dual_basicas.append(col)
                     break
-            if len(basicas) >= num_vars_primal:
-                break
 
-        basicas = basicas[:num_vars_primal]
+        dual_basicas = dual_basicas[:num_fil]
 
-        indices_basicas = [todos_nombres.index(v) for v in basicas]
-
-        matriz_np = np.array(matriz_inicial)
-        B = matriz_np[:, indices_basicas]
+        indices_basicas = [columnas.index(v) for v in dual_basicas]
+        B = matriz[:, indices_basicas]
 
         try:
             B_inv = np.linalg.inv(B)
-        except np.linalg.LinAlgError:
-            return self._generar_fallback_dual(matriz_inicial, rhs_original, ck_dual, ck_surplus, basicas, nombres_vars_dual, nombres_surplus, modelo_dual.tipo_optimizacion)
+        except:
+            dual_basicas = columnas[:num_fil]
+            indices_basicas = list(range(num_fil))
+            B = matriz[:, indices_basicas]
+            try:
+                B_inv = np.linalg.inv(B)
+            except:
+                return self._generar_fallback_dual_simple(modelo)
 
-        bk = B_inv @ np.array(rhs_original)
-        tableau_optimo = B_inv @ matriz_np
+        bk = B_inv @ np.array(rhs)
+        tableau = B_inv @ matriz
 
-        ck_fila = [ck_dual[nombres_vars_dual.index(v)] if v in nombres_vars_dual else 0.0 for v in basicas]
+        ck_dual = [restr.rhs for restr in modelo.restricciones]
+        ck_slack = [0.0] * num_vars_primal
+        ck_todos = ck_dual + ck_slack
 
-        fila_z = self._calcular_fila_z_dual(
-            tableau_optimo.tolist(),
-            bk.tolist(),
-            list(ck_dual) + ck_surplus,
-            modelo_dual.tipo_optimizacion,
-            ck_fila
-        )
+        ck_fila = [ck_todos[columnas.index(v)] for v in dual_basicas]
+
+        fila_z = []
+        for j in range(num_col):
+            zj = sum(ck_fila[i] * tableau[i, j] for i in range(num_fil))
+            cj = ck_todos[j]
+            fila_z.append(round(zj - cj, self.precision))
 
         return {
             "iteracion": -1,
             "nombre_objetivo": "W",
-            "tipo_optimizacion": modelo_dual.tipo_optimizacion,
-            "nombres_columnas": nombres_vars_dual + nombres_surplus,
+            "tipo_optimizacion": "min",
+            "nombres_columnas": columnas,
             "nombres_vars_originales": nombres_vars_dual,
-            "nombres_slack": nombres_surplus,
-            "ck": [round(c, self.precision) for c in list(ck_dual) + ck_surplus],
-            "variables_basicas": basicas,
+            "nombres_slack": nombres_slack_dual,
+            "ck": [round(c, self.precision) for c in ck_todos],
+            "variables_basicas": dual_basicas,
             "rhs": [round(r, self.precision) for r in bk.tolist()],
             "fila_z": fila_z,
-            "matriz": [[round(v, self.precision) for v in fila] for fila in tableau_optimo.tolist()],
-            "num_filas": len(matriz_inicial),
-            "num_columnas": len(matriz_inicial[0]) if matriz_inicial else num_restricciones + num_vars_primal
+            "matriz": [[round(v, self.precision) for v in fila] for fila in tableau.tolist()],
+            "num_filas": num_fil,
+            "num_columnas": num_col
         }
 
-    def _generar_tableau_dual_inicial(
-        self,
-        modelo: ModeloPrimal,
-        nombres_vars_dual: List[str],
-        nombres_surplus: List[str],
-        ck_dual: List[float],
-        ck_surplus: List[float]
-    ) -> Dict:
+    def _generar_fallback_dual_simple(self, modelo: ModeloPrimal) -> Dict:
+        """Fallback simple para el dual cuando no se puede calcular"""
+        num_vars_primal = len(modelo.funcion_objetivo)
+        num_restricciones = len(modelo.restricciones)
+
+        nombres_vars_primal = list(modelo.funcion_objetivo.keys())
+        nombres_vars_dual = [f"y{i+1}" for i in range(num_restricciones)]
+        nombres_slack = [f"s{i+1}" for i in range(num_vars_primal)]
+
+        ck_dual = [restr.rhs for restr in modelo.restricciones]
+        ck_slack = [0.0] * num_vars_primal
+
+        return {
+            "iteracion": -1,
+            "nombre_objetivo": "W",
+            "tipo_optimizacion": "min",
+            "nombres_columnas": nombres_vars_dual + nombres_slack,
+            "nombres_vars_originales": nombres_vars_dual,
+            "nombres_slack": nombres_slack,
+            "ck": [round(c, self.precision) for c in ck_dual + ck_slack],
+            "variables_basicas": [],
+            "rhs": [],
+            "fila_z": [],
+            "matriz": [],
+            "num_filas": 0,
+            "num_columnas": 0
+        }
         """Genera tableau inicial del dual (no óptimo)"""
         nombres_vars_primal = list(modelo.funcion_objetivo.keys())
         num_vars_primal = len(nombres_vars_primal)

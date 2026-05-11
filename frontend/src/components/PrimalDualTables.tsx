@@ -381,7 +381,7 @@ export function PrimalDualTables({ response, tabActiva }: Props) {
         <h3 className="text-xl font-semibold mb-4 text-gray-800">Análisis de Sensibilidad</h3>
 
         <div className="mb-6">
-          <h4 className="font-medium text-gray-700 mb-2">Rangos de Optimalidad</h4>
+          <h4 className="font-medium text-gray-700 mb-2">Rangos de Optimalidad (Coeficientes de FO)</h4>
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-gray-100">
@@ -400,7 +400,35 @@ export function PrimalDualTables({ response, tabActiva }: Props) {
                     {rango.max === Infinity ? '∞' : rango.max}
                   </td>
                   <td className="border p-2 text-sm text-gray-600">
-                    Mientras el coeficiente de {rango.variable} esté entre {rango.min} y {rango.max === Infinity ? '∞' : rango.max}, la solución óptima no cambia.
+                    Mientras el coef. de {rango.variable} esté entre {rango.min} y {rango.max === Infinity ? '∞' : rango.max}, la solución óptima no cambia.
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mb-6">
+          <h4 className="font-medium text-gray-700 mb-2">Rangos de Factibilidad (RHS)</h4>
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="border p-2 text-left">Restricción</th>
+                <th className="border p-2 text-right">Mínimo</th>
+                <th className="border p-2 text-right">Máximo</th>
+                <th className="border p-2 text-left">Interpretación</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(response.analisis_sensibilidad.rango_rhs || []).map((rango) => (
+                <tr key={rango.variable} className="hover:bg-gray-50">
+                  <td className="border p-2 font-mono">{rango.variable}</td>
+                  <td className="border p-2 text-right font-mono">{rango.min}</td>
+                  <td className="border p-2 text-right font-mono">
+                    {rango.max === Infinity ? '∞' : rango.max}
+                  </td>
+                  <td className="border p-2 text-sm text-gray-600">
+                    Mientras el RHS de {rango.variable} esté entre {rango.min} y {rango.max === Infinity ? '∞' : rango.max}, los precios sombra permanecen válidos.
                   </td>
                 </tr>
               ))}

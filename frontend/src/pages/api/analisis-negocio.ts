@@ -1,32 +1,17 @@
 /**
- * solve.ts - BFF (Backend for Frontend) en Astro
- * Protege las variables de entorno y orquesta la comunicación con FastAPI
+ * analisis-negocio.ts - BFF (Backend for Frontend) para análisis de negocio con IA
  */
 
 import type { APIRoute } from 'astro';
-import type { SolveRequest, ExtraerResponse, ErrorResponse } from '../../types';
+import type { AnalisisSensibilidad, ErrorResponse } from '../../types';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
-    const body: SolveRequest = await request.json();
-
-    if (!body.problema_texto || typeof body.problema_texto !== 'string') {
-      return new Response(
-        JSON.stringify({
-          codigo: 400,
-          error: 'BAD_REQUEST',
-          detalle: 'El campo problema_texto es requerido y debe ser string'
-        } as ErrorResponse),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
-    }
+    const body = await request.json();
 
     const backendUrl = import.meta.env.PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
-    const response = await fetch(`${backendUrl}/api/solve`, {
+    const response = await fetch(`${backendUrl}/api/analisis-negocio`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -54,7 +39,7 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     return new Response(
-      JSON.stringify(data as ExtraerResponse),
+      JSON.stringify(data),
       {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
@@ -62,7 +47,7 @@ export const POST: APIRoute = async ({ request }) => {
     );
 
   } catch (error) {
-    console.error('Error en BFF solve:', error);
+    console.error('Error en BFF analisis-negocio:', error);
 
     return new Response(
       JSON.stringify({

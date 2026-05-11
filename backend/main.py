@@ -11,12 +11,13 @@ import httpx
 from loguru import logger
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, List, Any
 
 load_dotenv()
 
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -26,7 +27,7 @@ from backend.models import (
     ModeloPrimal, PlanteoValidacion, ResultadoVariable,
     RestriccionResultado, ModeloDualExplícito, AnalisisSensibilidad,
     WhatIfRequest, WhatIfResponse, WhatIfModificacion,
-    Restriccion, CoeficientesRestriccion
+    Restriccion, CoeficientesRestriccion, ModeloPrimalRequest, ExtraerResponse
 )
 from backend.solver import PuLPSolver, SolverError
 from backend.validation import ModeloValidator, ValidationError
@@ -61,8 +62,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:4321,http://localhost:3000").split(",")
 
 # Configuración Nvidia NIM (vía .env)
-NVIDIA_API_URL = os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v4-pro")
+# 1. Extracción de modelo (Text-to-Math)
+NVIDIA_EXTRACT_URL = os.getenv("NVIDIA_EXTRACT_URL", os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions"))
+NVIDIA_EXTRACT_MODEL = os.getenv("NVIDIA_EXTRACT_MODEL", os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v4-pro"))
+
+# 2. Análisis de negocio (Math-to-Business)
+NVIDIA_ANALYSIS_URL = os.getenv("NVIDIA_ANALYSIS_URL", os.getenv("NVIDIA_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions"))
+NVIDIA_ANALYSIS_MODEL = os.getenv("NVIDIA_ANALYSIS_MODEL", os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v4-pro"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,7 +100,7 @@ async def health_check():
     return {"status": "healthy", "service": "LinSolve"}
 
 
-@app.post("/api/solve", response_model=SolveResponse, responses={
+@app.post("/api/solve", response_model=ExtraerResponse, responses={
     400: {"model": ErrorResponse, "description": "JSON malformado"},
     422: {"model": ErrorResponse, "description": "Esquema Pydantic no válido"},
     429: {"model": ErrorResponse, "description": "Rate limit excedido"},
@@ -102,19 +108,14 @@ async def health_check():
     502: {"model": ErrorResponse, "description": "Error en comunicación con LLM"}
 })
 @limiter.limit(os.getenv("RATE_LIMIT", "10/minute"))
-async def resolver_modelo(request: Request, solve_request: SolveRequest) -> SolveResponse:
+async def extraer_modelo(request: Request, solve_request: SolveRequest) -> ExtraerResponse:
     """
-    Endpoint principal para resolver problemas de Programación Lineal.
-
-    1. Recibe el texto del problema
-    2. Lo envía al LLM (Nvidia NIM) para extracción del modelo
-    3. Valida el modelo con Pydantic
-    4. Resuelve con PuLP y genera el Dual
-    5. Retorna resultado con análisis de sensibilidad
+    Endpoint para extraer el modelo primal usando el LLM.
+    Retorna el planteo para validación del usuario (no resuelve).
     """
     request_id = request.state.request_id
 
-    logger.info(f"[ReqID: {request_id}] Recibida petición de resolución")
+    logger.info(f"[ReqID: {request_id}] Extrayendo modelo con LLM")
 
     try:
         modelo_primal = await _extraer_modelo_primal(solve_request.problema_texto, request_id)
@@ -132,9 +133,59 @@ async def resolver_modelo(request: Request, solve_request: SolveRequest) -> Solv
                 }
             )
 
+        solver = PuLPSolver()
+        planteo = solver._generar_planteo_validacion(modelo_primal)
+
+        logger.info(f"[ReqID: {request_id}] Modelo extraído exitosamente")
+        return ExtraerResponse(planteo=planteo, modelo_primal=modelo_primal)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ReqID: {request_id}] Error inesperado: {str(e)}")
+        raise HTTPException(status_code=500, detail={
+            "codigo": 500,
+            "error": "INTERNAL_ERROR",
+            "detalle": "Error inesperado en extracción de modelo",
+            "request_id": request_id
+        })
+
+
+@app.post("/api/resolve", response_model=SolveResponse, responses={
+    400: {"model": ErrorResponse, "description": "JSON malformado"},
+    422: {"model": ErrorResponse, "description": "Esquema Pydantic no válido"},
+    429: {"model": ErrorResponse, "description": "Rate limit excedido"},
+    500: {"model": ErrorResponse, "description": "Error interno del solver"}
+})
+@limiter.limit(os.getenv("RATE_LIMIT", "10/minute"))
+async def resolver_modelo(request: Request, model_request: ModeloPrimalRequest) -> SolveResponse:
+    """
+    Endpoint para resolver un modelo primal ya validado.
+    No llama al LLM, recibe el modelo directamente.
+    """
+    request_id = request.state.request_id
+
+    logger.info(f"[ReqID: {request_id}] Resolviendo modelo primal")
+
+    try:
+        modelo_primal = model_request.modelo_primal
+
+        errores = ModeloValidator.validar(modelo_primal)
+        if not errores[0]:
+            logger.warning(f"[ReqID: {request_id}] Validación fallida: {errores[1]}")
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "codigo": 422,
+                    "error": "VALIDATION_ERROR",
+                    "detalle": errores[1],
+                    "request_id": request_id
+                }
+            )
+
         solver = PuLPSolver(
-            tolerancia=solve_request.tolerancia,
-            tiempo_maximo=solve_request.tiempo_maximo_seg
+            tolerancia=model_request.configuracion.get('tolerancia', 0.0001) if model_request.configuracion else 0.0001,
+            tiempo_maximo=model_request.configuracion.get('tiempo_maximo_seg', 30) if model_request.configuracion else 30
         )
         resultado = solver.resolver(modelo_primal, request_id)
 
@@ -169,10 +220,63 @@ async def resolver_modelo(request: Request, solve_request: SolveRequest) -> Solv
         })
 
 
+class DualRequest(BaseModel):
+    """Request para calcular el dual de un modelo ya resuelto"""
+    modelo_primal: ModeloPrimal
+    resultado_variables: List[Dict[str, Any]]
+    resultado_restricciones: List[Dict[str, Any]]
+
+
+class DualResponse(BaseModel):
+    """Respuesta con el tableau dual"""
+    dual_optimo: Dict
+    W_valor: float
+
+
+@app.post("/api/dual", response_model=DualResponse, responses={
+    422: {"model": ErrorResponse, "description": "Esquema no válido"},
+    500: {"model": ErrorResponse, "description": "Error interno"}
+})
+@limiter.limit(os.getenv("RATE_LIMIT", "10/minute"))
+async def calcular_dual(request: Request, dual_request: DualRequest):
+    """
+    Calcula el tableau dual bajo demanda.
+    Recibe el modelo primal ya resuelto y retorna el tableau dual.
+    """
+    request_id = request.state.request_id
+    logger.info(f"[ReqID: {request_id}] Calculando tableau dual bajo demanda")
+
+    try:
+        solver = PuLPSolver()
+        modelo = dual_request.modelo_primal
+
+        problema = solver._crear_problema_pulp(modelo)
+        problema.solve(PULP_CBC_CMD(msg=0))
+
+        dual_data = solver._generar_tableau_dual_optimo(modelo, problema)
+
+        W_valor = dual_request.resultado_variables[0].get('valor', 0) * 0 if len(dual_request.resultado_variables) > 0 else 0
+
+        return DualResponse(
+            dual_optimo=dual_data,
+            W_valor=round(W_valor, 6)
+        )
+
+    except Exception as e:
+        logger.error(f"[ReqID: {request_id}] Error calculando dual: {str(e)}")
+        raise HTTPException(status_code=500, detail={
+            "codigo": 500,
+            "error": "DUAL_ERROR",
+            "detalle": str(e),
+            "request_id": request_id
+        })
+
+
 def _corregir_nombres_restricciones(json_str: str) -> ModeloPrimal | None:
     """
-    Intenta corregir nombres de restricciones que no siguen el patrón R1, R2, etc.
-    Reemplaza nombres como 'Madera', 'Acabado' por 'R1', 'R2', etc.
+    Intenta corregir errores comunes del LLM:
+    1. Nombres de restricciones que no siguen el patrón R1, R2
+    2. coeficientes sin el campo "variables" anidado
     """
     import re
     try:
@@ -181,6 +285,11 @@ def _corregir_nombres_restricciones(json_str: str) -> ModeloPrimal | None:
             for i, restr in enumerate(data["restricciones"]):
                 if "nombre" in restr:
                     restr["nombre"] = f"R{i + 1}"
+                if "coeficientes" in restr:
+                    coef = restr["coeficientes"]
+                    if isinstance(coef, dict) and "variables" not in coef:
+                        if any(k in coef for k in ["x1", "x2", "x3", "x4", "x5"]):
+                            restr["coeficientes"] = {"variables": coef}
         return ModeloPrimal(**data)
     except Exception:
         return None
@@ -210,38 +319,41 @@ async def _extraer_modelo_primal(texto_problema: str, request_id: str) -> Modelo
             "request_id": request_id
         })
 
-    prompt = f"""Extrae el siguiente problema de Programación Lineal y devuélvelo en formato JSON.
+    prompt = f"""Eres un extractor de JSON. Responde SOLO con JSON válido.
 
-Problema: {texto_problema}
+Problema de Programación Lineal: {texto_problema}
 
-Responde SOLO con JSON válido siguiendo este esquema:
+Esquema JSON exacto (presta atención a los campos anidados):
 {{
-  "tipo_optimizacion": "max" | "min",
-  "funcion_objetivo": {{"x1": 3.0, "x2": 5.0}},
+  "tipo_optimizacion": "max",
+  "funcion_objetivo": {{"x1": 60, "x2": 30, "x3": 20}},
   "restricciones": [
-    {{"nombre": "R1", "coeficientes": {{"variables": {{"x1": 2.0, "x2": 1.0}}}}, "tipo": "<=" | ">=" | "=", "rhs": 100}}
+    {{"nombre": "R1", "coeficientes": {{"variables": {{"x1": 8, "x2": 6, "x3": 1}}}}, "tipo": "<=", "rhs": 48}}
   ],
   "nombre_variable_objetivo": "Z",
-  "descripcion_variables": {{"x1": "cantidad de escritorios producidos", "x2": "cantidad de mesas producidas"}}
+  "descripcion_variables": {{"x1": "escritorios", "x2": "mesas", "x3": "sillas"}}
 }}
 
-El campo "descripcion_variables" debe contener una descripción clara de qué representa cada variable en contexto de negocio.
+OBSERVA bien: "coeficientes" contiene "variables" que contiene los coeficientes.
+NO hagas: "coeficientes": {{"x1": 8}}
+HACER: "coeficientes": {{"variables": {{"x1": 8}}}}
 
-No incluyas texto adicional, solo el JSON."""
+Solo JSON, sin texto adicional."""
 
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.post(
-                NVIDIA_API_URL,
+                NVIDIA_EXTRACT_URL,
                 headers={
                     "Authorization": f"Bearer {nvidia_api_key}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": NVIDIA_MODEL,
+                    "model": NVIDIA_EXTRACT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    "max_tokens": 4096
+                    "temperature": 0.1,
+                    "max_tokens": 2048,
+                    "stream": False
                 }
             )
 
@@ -258,18 +370,24 @@ No incluyas texto adicional, solo el JSON."""
             data = response.json()
             contenido = data["choices"][0]["message"]["content"]
 
+            contenido_limpio = contenido.strip()
+            if contenido_limpio.startswith("```"):
+                lines = contenido_limpio.split('\n')
+                contenido_limpio = '\n'.join(lines[1:-1])
+            contenido_limpio = contenido_limpio.strip()
+
             try:
-                modelo_dict = json.loads(contenido)
+                modelo_dict = json.loads(contenido_limpio)
                 modelo_primal = ModeloPrimal(**modelo_dict)
                 logger.info(f"[ReqID: {request_id}] Modelo primal extraído del LLM")
                 return modelo_primal
             except Exception as validation_error:
                 error_str = str(validation_error) if str(validation_error) else repr(validation_error)
                 logger.warning(f"[ReqID: {request_id}] Validación falló: {error_str[:500]}")
-                logger.info(f"[ReqID: {request_id}] Contenido LLM (primeros 300 chars): {contenido[:300]}")
+                logger.info(f"[ReqID: {request_id}] Contenido LLM (primeros 300 chars): {contenido_limpio[:300]}")
                 if "string_pattern_mismatch" in error_str or "validation errors" in error_str.lower():
                     logger.warning(f"[ReqID: {request_id}] Intentando corregir nombres de restricciones")
-                    modelo_corregido = _corregir_nombres_restricciones(contenido)
+                    modelo_corregido = _corregir_nombres_restricciones(contenido_limpio)
                     if modelo_corregido:
                         logger.info(f"[ReqID: {request_id}] Nombres de restricciones corregidos automáticamente")
                         return modelo_corregido
@@ -345,18 +463,20 @@ Proporciona:
 Responde en español, en formato estructurado con encabezados."""
 
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                NVIDIA_API_URL,
+                NVIDIA_ANALYSIS_URL,
                 headers={
                     "Authorization": f"Bearer {nvidia_api_key}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": NVIDIA_MODEL,
+                    "model": NVIDIA_ANALYSIS_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3,
-                    "max_tokens": 2048
+                    "temperature": 1,
+                    "top_p": 0.95,
+                    "extra_body": {"chat_template_kwargs":{"thinking":False}},
+                    "max_tokens": 16384
                 }
             )
 

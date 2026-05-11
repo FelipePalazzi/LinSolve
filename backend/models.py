@@ -139,6 +139,7 @@ class RangoOptimo(BaseModel):
 class AnalisisSensibilidad(BaseModel):
     """Análisis de sensibilidad completo según Hillier & Lieberman"""
     rango_optimos: List[RangoOptimo]
+    rango_rhs: List[RangoOptimo] = []
     costo_reducido_interpretacion: str
     holguras_interpretacion: str
     relacion_Z_equals_W: str
@@ -239,6 +240,7 @@ class SolveRequest(BaseModel):
     """
     problema_texto: str
     configuracion: Optional[Dict[str, float]] = None
+    solo_extraer: bool = False
 
     @property
     def tolerancia(self) -> float:
@@ -251,6 +253,20 @@ class SolveRequest(BaseModel):
     @property
     def presicion(self) -> int:
         return int(self.configuracion.get('presicion', 6)) if self.configuracion else 6
+
+
+class ModeloPrimalRequest(BaseModel):
+    """
+    Request para resolver un modelo primal ya extraído (sin llamar LLM)
+    """
+    modelo_primal: ModeloPrimal
+    configuracion: Optional[Dict[str, float]] = None
+
+
+class ExtraerResponse(BaseModel):
+    """Respuesta de extracción de modelo - contiene planteo para validación y el modelo"""
+    planteo: PlanteoValidacion
+    modelo_primal: ModeloPrimal
 
 
 class ErrorResponse(BaseModel):

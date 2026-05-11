@@ -21,6 +21,10 @@ export function LinSolveApp() {
   const [loading, setLoading] = useState<boolean>(false);
   const [tabActiva, setTabActiva] = useState<TabActiva>('validacion');
   const [plantoConfirmado, setPlantoConfirmado] = useState<boolean>(false);
+  const [interpretacion, setInterpretacion] = useState<string | null>(null);
+  const [loadingInterpretacion, setLoadingInterpretacion] = useState<boolean>(false);
+  const [planteoValidacion, setPlanteoValidacion] = useState<PlanteoValidacion | null>(null);
+  const [modeloExtraido, setModeloExtraido] = useState<any>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,9 +35,11 @@ export function LinSolveApp() {
     setResponse(null);
     setPlantoConfirmado(false);
     setTabActiva('validacion');
+    setPlanteoValidacion(null);
+    setModeloExtraido(null);
 
     try {
-      const request: SolveRequest = {
+      const request = {
         problema_texto: problemaTexto,
         configuracion: {
           tolerancia: 0.0001,
@@ -42,16 +48,16 @@ export function LinSolveApp() {
         }
       };
 
-      const response = await fetch('/api/solve', {
+      const resp = await fetch('/api/solve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request)
       });
 
-      const data = await response.json();
+      const data = await resp.json();
 
-      if (!response.ok) {
-        let errorMessage = `Error ${response.status}`;
+      if (!resp.ok) {
+        let errorMessage = `Error ${resp.status}`;
         if (data.detail) {
           if (typeof data.detail === 'string') {
             errorMessage = data.detail;
@@ -64,7 +70,8 @@ export function LinSolveApp() {
         throw new Error(errorMessage);
       }
 
-      setResponse(data as SolveResponse);
+      setPlanteoValidacion(data.planteo as PlanteoValidacion);
+      setModeloExtraido(data.modelo_primal);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error desconocido';
       setError({
@@ -77,9 +84,73 @@ export function LinSolveApp() {
     }
   };
 
-  const confirmarPlanteo = () => {
-    setPlantoConfirmado(true);
-    setTabActiva('primal');
+  const confirmarPlanteo = async () => {
+    if (!modeloExtraido) return;
+
+    setLoading(true);
+    try {
+      const request = {
+        modelo_primal: modeloExtraido,
+        configuracion: {
+          tolerancia: 0.0001,
+          tiempo_maximo_seg: 30,
+          presicion: 6
+        }
+      };
+
+      const resp = await fetch('/api/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request)
+      });
+
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        let errorMessage = `Error ${resp.status}`;
+        if (data.detail) {
+          if (typeof data.detail === 'string') {
+            errorMessage = data.detail;
+          } else if (data.detail.detalle) {
+            errorMessage = data.detail.detalle;
+          }
+        }
+        throw new Error(errorMessage);
+      }
+
+      setResponse(data as SolveResponse);
+      setPlantoConfirmado(true);
+      setTabActiva('primal');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error desconocido';
+      setError({
+        codigo: 500,
+        error: 'CLIENT_ERROR',
+        detalle: message
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const cargarInterpretacion = async () => {
+    if (!response) return;
+    setLoadingInterpretacion(true);
+
+    try {
+      const res = await fetch('/api/analisis-negocio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(response.analisis_sensibilidad)
+      });
+
+      const data = await res.json();
+      setInterpretacion(data.analisis_negocio);
+    } catch (err) {
+      setInterpretacion('Error al cargar interpretación');
+    } finally {
+      setLoadingInterpretacion(false);
+    }
   };
 
   const renderPlanteoValidacion = (planteo: PlanteoValidacion) => (
@@ -194,9 +265,9 @@ export function LinSolveApp() {
           </div>
         )}
 
-        {response && !plantoConfirmado && (
+        {planteoValidacion && !plantoConfirmado && (
           <div>
-            {renderPlanteoValidacion(response.modelo_primal_valido)}
+            {renderPlanteoValidacion(planteoValidacion)}
           </div>
         )}
 
@@ -233,10 +304,35 @@ export function LinSolveApp() {
               >
                 What-If
               </button>
+              <button
+                onClick={() => {
+                  setTabActiva('interpretacion');
+                  if (!interpretacion) cargarInterpretacion();
+                }}
+                className={`px-4 py-2 rounded ${tabActiva === 'interpretacion' ? 'bg-purple-600 text-white' : 'bg-purple-200'}`}
+              >
+                Interpretación IA
+              </button>
             </div>
 
             {tabActiva === 'whatif' ? (
               <WhatIfAnalysis response={response} />
+            ) : tabActiva === 'interpretacion' ? (
+              <div className="bg-white p-6 rounded-lg shadow-md">
+                <h3 className="text-xl font-semibold mb-4 text-gray-800">Interpretación de Negocios</h3>
+                {loadingInterpretacion ? (
+                  <div className="flex justify-center items-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                    <span className="ml-3 text-gray-600">Generando interpretación...</span>
+                  </div>
+                ) : interpretacion ? (
+                  <div className="prose prose-sm max-w-none">
+                    <p className="text-gray-700 whitespace-pre-wrap">{interpretacion}</p>
+                  </div>
+                ) : (
+                  <p className="text-gray-500">Sin interpretación disponible</p>
+                )}
+              </div>
             ) : (
               <PrimalDualTables
                 response={response}

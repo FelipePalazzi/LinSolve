@@ -1,21 +1,21 @@
 /**
- * solve.ts - BFF (Backend for Frontend) en Astro
- * Protege las variables de entorno y orquesta la comunicación con FastAPI
+ * resolve.ts - BFF (Backend for Frontend) para resolución de modelos
+ * Recibe modelo ya extraído y lo envía al solver
  */
 
 import type { APIRoute } from 'astro';
-import type { SolveRequest, ExtraerResponse, ErrorResponse } from '../../types';
+import type { ModeloPrimalRequest, SolveResponse, ErrorResponse } from '../../types';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
-    const body: SolveRequest = await request.json();
+    const body: ModeloPrimalRequest = await request.json();
 
-    if (!body.problema_texto || typeof body.problema_texto !== 'string') {
+    if (!body.modelo_primal) {
       return new Response(
         JSON.stringify({
           codigo: 400,
           error: 'BAD_REQUEST',
-          detalle: 'El campo problema_texto es requerido y debe ser string'
+          detalle: 'El campo modelo_primal es requerido'
         } as ErrorResponse),
         {
           status: 400,
@@ -26,7 +26,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     const backendUrl = import.meta.env.PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
-    const response = await fetch(`${backendUrl}/api/solve`, {
+    const response = await fetch(`${backendUrl}/api/resolve`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -54,7 +54,7 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     return new Response(
-      JSON.stringify(data as ExtraerResponse),
+      JSON.stringify(data as SolveResponse),
       {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
@@ -62,7 +62,7 @@ export const POST: APIRoute = async ({ request }) => {
     );
 
   } catch (error) {
-    console.error('Error en BFF solve:', error);
+    console.error('Error en BFF resolve:', error);
 
     return new Response(
       JSON.stringify({

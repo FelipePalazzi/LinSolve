@@ -12,6 +12,25 @@ export interface SolveRequest {
   configuracion?: Configuracion;
 }
 
+export interface ModeloPrimalRequest {
+  modelo_primal: ModeloPrimal;
+  configuracion?: Configuracion;
+}
+
+export interface ExtraerResponse {
+  planteo: PlanteoValidacion;
+  modelo_primal: ModeloPrimal;
+}
+
+export interface ErrorResponse {
+  codigo: number;
+  error: string;
+  detalle: string;
+  request_id?: string;
+}
+
+export type TabActiva = 'validacion' | 'primal' | 'dual' | 'sensibilidad' | 'whatif' | 'interpretacion';
+
 export interface CoeficientesRestriccion {
   variables: Record<string, number>;
 }
@@ -29,6 +48,7 @@ export interface ModeloPrimal {
   funcion_objetivo: Record<string, number>;
   restricciones: Restriccion[];
   nombre_variable_objetivo: string;
+  descripcion_variables?: Record<string, string>;
 }
 
 export interface PlanteoValidacion {
@@ -81,12 +101,43 @@ export interface RangoOptimo {
 
 export interface AnalisisSensibilidad {
   rango_optimos: RangoOptimo[];
+  rango_rhs: RangoOptimo[];
   costo_reducido_interpretacion: string;
   holguras_interpretacion: string;
   relacion_Z_equals_W: string;
 }
 
 export type EstadoSolucion = 'OPTIMO' | 'INFEASIBLE' | 'NO_ACOTADO' | 'ERROR';
+
+export interface TableauColumna {
+  nombre: string;
+  ck: number;
+  tipo: 'variable_original' | 'slack' | 'artificial';
+}
+
+export interface TableauIteracion {
+  iteracion: number;
+  nombre_objetivo: string;
+  tipo_optimizacion: 'max' | 'min';
+  nombres_columnas: string[];
+  nombres_vars_originales: string[];
+  nombres_slack: string[];
+  ck: number[];
+  variables_basicas: string[];
+  rhs: number[];
+  fila_z: number[];
+  matriz: number[][];
+  num_filas: number;
+  num_columnas: number;
+}
+
+export interface TableauRespuesta {
+  primal_inicial: TableauIteracion;
+  primal_optimo: TableauIteracion;
+  dual_optimo: TableauIteracion;
+  Z_valor: number;
+  W_valor: number;
+}
 
 export interface SolveResponse {
   estado: EstadoSolucion;
@@ -128,4 +179,9 @@ export interface WhatIfResponse {
   restricciones_afectadas: string[];
   tableau_optimo_nuevo?: TableauIteracion;
   dual_optimo_nuevo?: TableauIteracion;
+}
+
+export interface TooltipData {
+  titulo: string;
+  contenido: string;
 }
